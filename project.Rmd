@@ -1,0 +1,111 @@
+---
+title: "Course Project"
+author: "Ruomeng Cui"
+date: "August 17, 2015"
+output: html_document
+---
+  ## Course Project
+  ### Data Cleaning
+  We first clean the data. We find that a lot of variables have NA or empty-valued for more than 90% of the observations. Moreover, these variables are not correlated with our prediction outcomes. Therefore, we clean the data to remove these variables. This decreases the size of predictors from 159 to 53. 
+
+```{r}
+library(caret)
+require(caret)
+# Load the csv file
+train <- read.csv('./pml-training.csv')
+# Clean the data:
+# We tease out variables with too many NAs and too many missing values
+# The reaon is that more than 90% of observations are missing for 
+# those variables.
+complete_variable = vector()
+for(name in names(train)) {
+  if (sum(complete.cases(train[[name]])) == 19622) {
+    if (sum(train[[name]] == "") < 1000) {
+      complete_variable <- c(complete_variable, name)
+    }
+  }
+}
+#take out time stamps
+complete_variable <- c('user_name', complete_variable[8:length(complete_variable)])
+train <- train[, complete_variable]
+```
+
+Since we have 53 predictors, we preprocess the data to reduce the dimensionality of feathres and highly correlated covariates. We test whether there is any feature with near zero variance and remove it. This is because zero variance indicates almost no relation with the outcome, and thus, very low predicting power. 
+
+```{r}
+trainPredictors <- train[, 2:53]
+trainOther <- train[, c(54, 1)]
+nzv <- nearZeroVar(trainPredictors)
+if (length(nzv) != 0) {
+  trainPredictors <- trainPredictors[, -nzv]  
+}
+```
+
+Second, we test wehther there is any feature that is a linear combination of other features. We eliminate those features.
+
+```{r}
+lcm <- findLinearCombos(trainPredictors)
+if (length(lcm$remove) != 0) {
+  trainPredictors <- trainPredictors[, -lcm$remove]  
+}
+```
+
+Last, we remove variables which are highly correlated with each other (correlation > 0.8). We have 46 predictors.
+
+```{r}
+datacor <- cor(trainPredictors)
+highCor <- findCorrelation(datacor, cutoff = 0.8)
+highCor=highCor[-2]
+if (length(highCor) != 0) {
+  trainPredictors <- trainPredictors[, -highCor]  
+}
+train <- data.frame(trainOther, trainPredictors)
+```
+
+### Model Fitting and Performance Comparison
+
+After cleaning the data, we fit various models and compare their performances. We use the 10-fold cross validation to make sure we have a good balance between biases and variances in our evaluations. We also repeate 10-fold corss-validation 10 times to decreases the variances.
+
+We preprocess our data by centering them and scaling them. This is because we have a huge discrepency between the scales of different measures. We use accuracy and kappa as our measure of model predictability. 
+
+The following code trains four models: (1) lda, (2) gbm, and (3) rpart. We then compare the performances of these models.
+
+```{r, cache=TRUE}
+# We use 10-fold cross validation and we repeat it for 10 times.
+ctrl <- trainControl(method = 'repeatedcv', repeats = 10, number = 3) 
+library(MASS)
+ldaFit <- train(classe~., method = 'lda', trControl = ctrl, 
+                data = train, preProc = c("center", "scale"))
+library(gbm)
+library(plyr)
+library(survival)
+gbmFit <- train(classe~., method = 'gbm', trControl = ctrl, 
+                data = train, verbose = FALSE, preProc = c('center', 'scale'))
+dtFit <- train(classe~., method = 'rpart', trControl = ctrl, 
+               data = train, preProc = c('center', 'scale'))
+```
+
+This is the performance of all the models:
+  
+```{r}
+resamps <- resamples(list(GBM = gbmFit, LDA = ldaFit, DT = dtFit))
+summary(resamps)
+splom(resamps)
+```
+
+Note that boosted regression outperforms other predictors. A test shows that combing these three predictors does not outperform boosted regression. Therefore, in the final prediction, we will simiply use the boosted regression tree.
+
+### Data Prediction
+With our final prediction model, we conduct the out-of-sample prediction for the test sets.
+```{r}
+test <- read.csv('./pml-testing.csv')
+test <- test[, names(train)[2:length(train)]]
+pred <- predict(gbmFit, test)
+pred
+n <- length(pred)
+  for(i in 1:n){
+    filename <- paste0("./predictions/problem_id_",i,".txt")
+    write.table(pred[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+
+```
